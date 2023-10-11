@@ -34,7 +34,7 @@ private:
     static constexpr auto MY_UART_DEVICE = uart_device_number_t::UART_DEVICE_3;
     static constexpr auto MY_DMAC_CHANNEL = dmac_channel_number_t::DMAC_CHANNEL0;
 
-    static constexpr auto MAX_STEP = 200;
+    static constexpr auto MAX_STEP = 100;
     static constexpr size_t MAX_STRING_LENGTH = 32;
     static constexpr auto STRING_1 = std::string_view("Hello\n");
     static constexpr auto STRING_2 = std::string_view("Hallo\n");
@@ -49,7 +49,7 @@ private:
     std::array<uint32_t, MAX_STRING_LENGTH> tx_buf;
 
 private:
-    static int my_timer_callback(void* ctx) {
+    static int on_my_timer(void* ctx) {
         auto& self = *reinterpret_cast<Self*>(ctx);
         if (self.is_button_down) {
             self.update_step();
@@ -57,12 +57,12 @@ private:
         }
         return 0;
     }
-    static int my_button_callback(void* ctx) {
+    static int on_button_change(void* ctx) {
         auto& self = *reinterpret_cast<Self*>(ctx);
         self.query_button();
         return 0;
     }
-    static int my_uart_callback(void* ctx) {
+    static int on_uart_sent(void* ctx) {
         auto& self = *reinterpret_cast<Self*>(ctx);
         self.update_string_idx();
         self.send_string_dma_irq();
@@ -95,7 +95,7 @@ private:
             .transfer_mode = uart_interrupt_mode_t::UART_SEND,
         };
         auto irq = plic_interrupt_t{
-            .callback = &Self::my_uart_callback,
+            .callback = &Self::on_uart_sent,
             .ctx = this,
             .priority = 1,
         };
@@ -118,7 +118,7 @@ public:
         sysctl_enable_irq();
 
         // 配置按键中断。
-        gpiohs_irq_register(GPIOHS_BUTTON, 1, &Self::my_button_callback, this);
+        gpiohs_irq_register(GPIOHS_BUTTON, 1, &Self::on_button_change, this);
 
         // 配置时钟中断。
         timer_init(MY_TIMER_DEVICE);
@@ -126,7 +126,7 @@ public:
         timer_irq_register(MY_TIMER_DEVICE, MY_TIMER_CHANNEL,
                            false, // is_single_shot
                            1,     // priority
-                           &Self::my_timer_callback,
+                           &Self::on_my_timer,
                            this); // ctx
 
         // 配置串口。
@@ -142,7 +142,7 @@ public:
         // 配置串口发送完成中断（发送第一次）。
         send_string_dma_irq();
 
-        // 消息循环。
+        // 死循环。
         while (true) {
         }
     }
