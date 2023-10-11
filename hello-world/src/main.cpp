@@ -1,7 +1,9 @@
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <string_view>
 #include <thread>
 
 #include <fpioa.h>
@@ -29,12 +31,22 @@ private:
         static_cast<int>(FUNC_BUTTON) - static_cast<int>(fpioa_function_t::FUNC_GPIOHS0);
     static constexpr auto MY_PWM_DEVICE = pwm_device_number_t::PWM_DEVICE_1;
     static constexpr auto MY_PWM_CHANNEL = pwm_channel_number_t::PWM_CHANNEL_1;
+    static constexpr auto MY_UART_DEVICE = uart_device_number_t::UART_DEVICE_3;
+    static constexpr auto MY_DMAC_CHANNEL = dmac_channel_number_t::DMAC_CHANNEL0;
 
     static constexpr auto MAX_STEP = 200;
+    static constexpr size_t MAX_STRING_LENGTH = 32;
+    static constexpr auto STRING_1 = std::string_view("Hello\n");
+    static constexpr auto STRING_2 = std::string_view("Hallo\n");
+    static constexpr auto STRING_3 = std::string_view("你好\n");
+    static constexpr auto STRING_4 = std::string_view("こんにちは\n");
+    static constexpr auto STRINGS = std::array{STRING_1, STRING_2, STRING_3, STRING_4};
 
 private:
     int step{};
+    size_t string_idx{};
     bool is_button_down{};
+    std::array<uint32_t, MAX_STRING_LENGTH> tx_buf;
 
 private:
     static int my_timer_callback(void* ctx) {
@@ -48,6 +60,12 @@ private:
     static int my_button_callback(void* ctx) {
         auto& self = *reinterpret_cast<Self*>(ctx);
         self.query_button();
+        return 0;
+    }
+    static int my_uart_callback(void* ctx) {
+        auto& self = *reinterpret_cast<Self*>(ctx);
+        self.update_string_idx();
+        self.send_string_dma_irq();
         return 0;
     }
 
@@ -64,6 +82,30 @@ private:
     }
     void query_button() {
         is_button_down = !gpiohs_get_pin(GPIOHS_BUTTON);
+    }
+    void send_string_dma_irq() {
+        const auto& s = STRINGS[string_idx];
+        for (size_t i = 0; i < s.length(); i++) {
+            tx_buf[i] = s[i];
+        }
+        const auto data = uart_data_t{
+            .tx_channel = MY_DMAC_CHANNEL,
+            .tx_buf = tx_buf.data(),
+            .tx_len = s.length(),
+            .transfer_mode = uart_interrupt_mode_t::UART_SEND,
+        };
+        auto irq = plic_interrupt_t{
+            .callback = &Self::my_uart_callback,
+            .ctx = this,
+            .priority = 1,
+        };
+        uart_handle_data_dma(MY_UART_DEVICE, data, &irq);
+    }
+    void update_string_idx() {
+        string_idx++;
+        if (string_idx >= STRINGS.size()) {
+            string_idx = 0;
+        }
     }
 
 public:
@@ -87,10 +129,18 @@ public:
                            &Self::my_timer_callback,
                            this); // ctx
 
-        // 配置串口发送完成中断。
+        // 配置串口。
+        uart_init(MY_UART_DEVICE);
+        uart_configure(MY_UART_DEVICE, 115200,
+                       uart_bitwidth_t::UART_BITWIDTH_8BIT, //
+                       uart_stopbit_t::UART_STOP_1,         //
+                       uart_parity_t::UART_PARITY_NONE);
 
         // 启动时钟。
         timer_set_enable(MY_TIMER_DEVICE, MY_TIMER_CHANNEL, true);
+
+        // 配置串口发送完成中断（发送第一次）。
+        send_string_dma_irq();
 
         // 消息循环。
         while (true) {
