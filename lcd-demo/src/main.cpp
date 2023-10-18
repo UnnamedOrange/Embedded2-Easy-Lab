@@ -1,5 +1,9 @@
 #include <array>
+#include <chrono>
 #include <cstdint>
+#include <queue>
+#include <string>
+#include <vector>
 
 #include <fpioa.h>
 #include <gpiohs.h>
@@ -8,6 +12,8 @@
 #include "board_config.h"
 #include "lcd.h"
 #include "nt35310.h"
+
+using namespace std::literals;
 
 /**
  * @brief Convert HSV to RGB565.
@@ -85,7 +91,19 @@ struct Colors {
 inline static constexpr Colors _colors;
 inline static const auto& colors = _colors.value;
 
-static uint16_t g_lcd_gram[LCD_X_MAX * LCD_Y_MAX] __attribute__((aligned(128)));
+static std::array<uint16_t, LCD_X_MAX * LCD_Y_MAX> g_lcd_gram;
+static void my_draw_string(const std::string& str, int x, int y, uint16_t font_color, uint16_t bg_color) {
+    const int width = 8 * str.length();
+    const int height = 16;
+    std::vector<uint16_t> buf(width * height);
+    lcd_ram_draw_string(const_cast<char*>(str.data()), reinterpret_cast<uint32_t*>(buf.data()), font_color, bg_color);
+
+    for (int i = 0; i < width && x + i < LCD_Y_MAX; i++) {
+        for (int j = 0; j < height && y + j < LCD_X_MAX; j++) {
+            g_lcd_gram[(y + j) * LCD_Y_MAX + (x + i)] = buf[j * width + i];
+        }
+    }
+}
 
 static void io_set_power(void) {
     // Note: 可以设置电源域。
@@ -113,9 +131,22 @@ int main() {
     lcd_init();
     lcd_set_direction(DIR_YX_RLDU);
 
+    using Clock = std::chrono::steady_clock;
+    std::queue<Clock::time_point> frame_time_points;
     while (true) {
         for (const auto color : colors) {
-            lcd_clear(color);
+            const auto now = Clock::now();
+            frame_time_points.push(now);
+            while (now - frame_time_points.front() > 1s) {
+                frame_time_points.pop();
+            }
+            const auto fps = frame_time_points.size();
+            std::fill(g_lcd_gram.begin(), g_lcd_gram.end(), color);
+
+            char buf[8];
+            std::sprintf(buf, "%u", static_cast<unsigned>(fps));
+            my_draw_string(buf, 0, 0, BLACK, color);
+            lcd_draw_picture(0, 0, LCD_Y_MAX, LCD_X_MAX, reinterpret_cast<uint32_t*>(g_lcd_gram.data()));
         }
     }
 }
