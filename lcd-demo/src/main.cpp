@@ -8,12 +8,14 @@
 #include <fpioa.h>
 #include <gpiohs.h>
 #include <sysctl.h>
+#include <timer.h>
 
 #include "board_config.h"
 #include "lcd.h"
 #include "nt35310.h"
 
 using namespace std::literals;
+using namespace std::chrono;
 
 /**
  * @brief Convert HSV to RGB565.
@@ -91,6 +93,15 @@ struct Colors {
 inline static constexpr Colors _colors;
 inline static const auto& colors = _colors.value;
 
+static int counter = 0;
+
+static constexpr auto MY_TIMER_DEVICE = timer_device_number_t::TIMER_DEVICE_0;
+static constexpr auto MY_TIMER_CHANNEL = timer_channel_number_t::TIMER_CHANNEL_0;
+int on_timer(void*) {
+    counter++;
+    return 0;
+}
+
 static std::array<uint16_t, LCD_X_MAX * LCD_Y_MAX> g_lcd_gram;
 static void my_draw_string(const std::string& str, int x, int y, uint16_t font_color, uint16_t bg_color) {
     const int width = 8 * str.length();
@@ -126,12 +137,24 @@ static void io_init(void) {
 }
 
 int main() {
+    plic_init();
+    sysctl_enable_irq();
+
     io_init();
     io_set_power();
     lcd_init();
     lcd_set_direction(DIR_YX_RLDU);
 
-    using Clock = std::chrono::steady_clock;
+    timer_init(MY_TIMER_DEVICE);
+    timer_set_interval(MY_TIMER_DEVICE, MY_TIMER_CHANNEL, duration_cast<nanoseconds>(1s).count());
+    timer_irq_register(MY_TIMER_DEVICE, MY_TIMER_CHANNEL,
+                       false, // is_single_shot
+                       1,     // priority
+                       on_timer,
+                       nullptr); // ctx
+    timer_set_enable(MY_TIMER_DEVICE, MY_TIMER_CHANNEL, true);
+
+    using Clock = steady_clock;
     std::queue<Clock::time_point> frame_time_points;
     while (true) {
         for (const auto color : colors) {
@@ -146,6 +169,8 @@ int main() {
             char buf[8];
             std::sprintf(buf, "%u", static_cast<unsigned>(fps));
             my_draw_string(buf, 0, 0, BLACK, color);
+            std::sprintf(buf, "%d", counter);
+            my_draw_string(buf, 0, LCD_X_MAX - 16, WHITE, color);
             lcd_draw_picture(0, 0, LCD_Y_MAX, LCD_X_MAX, reinterpret_cast<uint32_t*>(g_lcd_gram.data()));
         }
     }
